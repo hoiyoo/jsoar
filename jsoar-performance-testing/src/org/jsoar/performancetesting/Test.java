@@ -19,7 +19,7 @@ public interface Test
      * @param testFile
      * @param decisionCycles
      */
-    public void initialize(String testName, String testFile, Integer decisionCycles);
+    public void initialize(String testName, String testFile, TestSettings settings);
     
     /**
      * 
@@ -40,7 +40,7 @@ public interface Test
      * @return whether running a test was successful or not.
      * @throws SoarException
      */
-    public boolean run(int runCount, Long seed) throws SoarException;
+    public boolean run(int runCount) throws SoarException;
     /**
      * Resets the test.  Resets epmem, smem, and init's soar
      * @return whether the reset was successful.
@@ -70,7 +70,7 @@ public interface Test
     
     /**
      * 
-     * @return the numebr of decisions the last test ran for.
+     * @return the number of decisions the last test ran for.
      */
     public int getDecisionCyclesRunFor();
     /**
@@ -78,4 +78,10 @@ public interface Test
      * @return the memory used by the last run measured at the end of the test's run.
      */
     public long getMemoryForRun();
+    
+    /**
+     * 
+     * @return The settings for the test
+     */
+    public TestSettings getTestSettings();
 }

@@ -17,6 +17,7 @@ import java.util.Arrays;
 import org.jsoar.kernel.Agent;
 import org.jsoar.kernel.Production;
 import org.jsoar.kernel.SoarException;
+import org.jsoar.kernel.epmem.EpisodicMemory;
 import org.jsoar.kernel.parser.original.LexemeType;
 import org.jsoar.kernel.parser.original.Lexer;
 import org.jsoar.kernel.smem.DefaultSemanticMemoryParams.LearningChoices;
@@ -239,11 +240,6 @@ class DefaultSemanticMemoryCommand implements SoarCommand
             {
                 props.set(DefaultSemanticMemoryParams.LEARNING, LearningChoices.valueOf(value));
             }
-            else if(smem.getDatabase() != null)
-            {
-                // TODO: This check should be done in the property system
-                throw new SoarException("This parameter is protected while the semantic memory database is open");
-            }
             else if(name.equals("driver"))
             {
                 props.set(DefaultSemanticMemoryParams.DRIVER, value);
@@ -303,7 +299,7 @@ class DefaultSemanticMemoryCommand implements SoarCommand
             }
             else if(name.equals("base-incremental-threshes"))
             {
-                props.set(DefaultSemanticMemoryParams.BASE_INCREMENTAL_THRESHES, SetWrapperLong.toSetWrapper(value));
+                props.set(DefaultSemanticMemoryParams.BASE_INCREMENTAL_THRESHES, smem.getParams().base_incremental_threshes.get().toSetWrapper(value));
             }
             else if(name.equals("mirroring"))
             {
@@ -324,16 +320,14 @@ class DefaultSemanticMemoryCommand implements SoarCommand
 
     private String doInit(int i, String[] args) throws SoarException
     {
-        // Because of LTIs, re-initializing requires all other memories to be reinitialized.        
-        
+        // Because of LTIs, re-initializing requires all other memories to be reinitialized.
         // epmem - close before working/production memories to get re-init benefits
-        // TODO EPMEM this->DoCommandInternal( "epmem --close" );
-        
         // smem - close before working/production memories to prevent id counter mess-ups
-        smem.smem_close();
-
         // production memory (automatic init-soar clears working memory as a result) 
-        //this->DoCommandInternal( "excise --all" );
+        
+        final EpisodicMemory epmem = Adaptables.require(getClass(), context, EpisodicMemory.class);
+        epmem.epmem_close();
+        smem.smem_close();
         
         // Excise all just removes all rules and does init-soar
         final Agent agent = Adaptables.require(getClass(), context, Agent.class);
@@ -344,7 +338,7 @@ class DefaultSemanticMemoryCommand implements SoarCommand
             count++;
         }
         agent.initialize();
-                
+        
         return "Agent reinitialized.\n" +
                count + " productions excised.\n" +
                "SMem| Semantic memory system re-initialized.\n";
