@@ -53,6 +53,76 @@ public class SMemFunctionalTests extends FunctionalTestHarness
     }
     
     @Test
+    public void testTrivialMathQuery() throws Exception
+    {
+        agent.setStopPhase(Phase.OUTPUT);
+        runTest("testTrivialMathQuery", 2);
+    }
+    
+    @Test
+    public void testBadMathQuery() throws Exception
+    {
+        agent.setStopPhase(Phase.OUTPUT);
+        runTest("testBadMathQuery", 2);
+    }
+    
+    @Test
+    public void testMaxQuery() throws Exception
+    {
+        agent.setStopPhase(Phase.OUTPUT);
+        runTest("testMax", 1);
+    }
+    
+    @Test
+    public void testMaxMixedTypes() throws Exception
+    {
+        agent.setStopPhase(Phase.OUTPUT);
+        runTest("testMaxMixedTypes", 1);
+    }
+    
+    @Test
+    public void testMaxMultivalued() throws Exception
+    {
+        agent.setStopPhase(Phase.OUTPUT);
+        runTest("testMaxMultivalued", 1);
+    }
+    
+    @Test
+    public void testMin() throws Exception
+    {
+        agent.setStopPhase(Phase.OUTPUT);
+        runTest("testMin", 1);
+    }
+    
+    @Test
+    public void testMaxNegQuery() throws Exception
+    {
+        agent.setStopPhase(Phase.OUTPUT);
+        runTest("testMaxNegation", 1);
+    }
+    
+    @Test
+    public void testLess() throws Exception
+    {
+        agent.setStopPhase(Phase.OUTPUT);
+        runTest("testLess", 1);
+    }
+    
+    @Test
+    public void testLessWithNeg() throws Exception
+    {
+        agent.setStopPhase(Phase.OUTPUT);
+        runTest("testLessWithNeg", 1);
+    }
+    
+    @Test
+    public void testLessNoSolution() throws Exception
+    {
+        agent.setStopPhase(Phase.OUTPUT);
+        runTest("testLessNoSolution", 1);
+    }
+    
+    @Test
     public void testMirroring() throws Exception
     {
         agent.setStopPhase(Phase.OUTPUT);

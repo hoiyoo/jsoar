@@ -18,6 +18,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -42,6 +43,7 @@ import org.jsoar.kernel.memory.Instantiation;
 import org.jsoar.kernel.memory.Preference;
 import org.jsoar.kernel.memory.RecognitionMemory;
 import org.jsoar.kernel.memory.Slot;
+import org.jsoar.kernel.memory.Wme;
 import org.jsoar.kernel.memory.WmeImpl;
 import org.jsoar.kernel.memory.WmeImpl.SymbolTriple;
 import org.jsoar.kernel.memory.WorkingMemory;
@@ -72,6 +74,10 @@ import org.jsoar.kernel.tracing.Printer;
 import org.jsoar.kernel.tracing.Trace;
 import org.jsoar.kernel.tracing.Trace.Category;
 import org.jsoar.kernel.wma.WorkingMemoryActivation;
+import org.jsoar.kernel.smem.math.MathQuery;
+import org.jsoar.kernel.smem.math.MathQueryLess;
+import org.jsoar.kernel.smem.math.MathQueryMax;
+import org.jsoar.kernel.smem.math.MathQueryMin;
 import org.jsoar.util.ByRef;
 import org.jsoar.util.JdbcTools;
 import org.jsoar.util.adaptables.Adaptable;
@@ -770,7 +776,9 @@ public class DefaultSemanticMemory implements SemanticMemory
             {
                 throw new IllegalStateException("Expected non-empty result");
             }
-            return rs.getInt(0 + 1);
+            int toReturn = rs.getInt(0 + 1);
+            rs.close();
+            return toReturn;
         }
         finally
         {
@@ -785,7 +793,9 @@ public class DefaultSemanticMemory implements SemanticMemory
         try
         {
             rs.next();
-            return rs.getDouble(0 + 1);
+            double toReturn = rs.getDouble(0 + 1);
+            rs.close();
+            return toReturn;
         }
         finally
         {
@@ -800,7 +810,9 @@ public class DefaultSemanticMemory implements SemanticMemory
         try
         {
             rs.next();
-            return rs.getString(0 + 1);
+            String toReturn = rs.getString(0 + 1); 
+            rs.close();
+            return toReturn;
         }
         finally
         {
@@ -2313,7 +2325,7 @@ public class DefaultSemanticMemory implements SemanticMemory
      * @return
      * @throws SQLException
      */
-    boolean _smem_process_cue_wme(WmeImpl w, boolean pos_cue, PriorityQueue<WeightedCueElement> weighted_pq) throws SQLException
+    boolean _smem_process_cue_wme(WmeImpl w, boolean pos_cue, PriorityQueue<WeightedCueElement> weighted_pq, MathQuery mathQuery) throws SQLException
     {
         boolean good_wme = true;
         WeightedCueElement new_cue_element;
@@ -2330,7 +2342,8 @@ public class DefaultSemanticMemory implements SemanticMemory
             attr_hash = smem_temporal_hash(w.attr, false);
             if (attr_hash != 0)
             {
-                if (w.value.symbol_is_constant())
+                //If there is a math query, we don't want to treat this as a direct match search
+                if (w.value.symbol_is_constant() && mathQuery == null)
                 {
                     value_lti = 0;
                     value_hash = smem_temporal_hash(w.value, false);
@@ -2353,7 +2366,12 @@ public class DefaultSemanticMemory implements SemanticMemory
                 }
                 else
                 {
-                    value_lti = w.value.asIdentifier().smem_lti;
+                    //If we get here on a math query, the value may not be an identifier
+                    if(w.value.asIdentifier() != null){
+                        value_lti = w.value.asIdentifier().smem_lti;
+                    }else{
+                        value_lti = 0;
+                    }
                     value_hash = 0;
 
                     if (value_lti == 0)
@@ -2390,6 +2408,7 @@ public class DefaultSemanticMemory implements SemanticMemory
 
                             new_cue_element.element_type = element_type;
                             new_cue_element.pos_element = pos_cue;
+                            new_cue_element.mathElement = mathQuery;
 
                             weighted_pq.add(new_cue_element);
                             new_cue_element = null;
@@ -2419,11 +2438,88 @@ public class DefaultSemanticMemory implements SemanticMemory
 
         return good_wme;
     }
-
-    long /* smem_lti_id */smem_process_query(IdentifierImpl state, IdentifierImpl query, IdentifierImpl negquery, Set<Long> /* smem_lti_set */prohibit, Set<WmeImpl> cue_wmes, List<SymbolTriple> meta_wmes, List<SymbolTriple> retrieval_wmes)
+    
+    private static class MathQueryProcessResults{
+        public boolean needFullSearch;
+        public boolean goodCue;
+        public MathQueryProcessResults(boolean needFullSearch, boolean goodCue){            
+            this.needFullSearch = needFullSearch;
+            this.goodCue = goodCue;
+        }
+    }
+    
+    private MathQueryProcessResults processMathQuery(IdentifierImpl mathQuery, PriorityQueue<WeightedCueElement> weighted_pq) throws SQLException{
+        boolean needFullSearch = false;
+        //Use this set to track when certain elements have been added, so we don't add them twice
+        Set<Symbol> uniqueMathQueryElements = new HashSet<Symbol>();
+        List<WmeImpl> cue = smem_get_direct_augs_of_id(mathQuery);
+        for(Iterator<WmeImpl> it = cue.iterator(); it.hasNext();)
+        {
+            WmeImpl cue_p = it.next();
+            
+            List<WmeImpl> cueTypes = smem_get_direct_augs_of_id(cue_p.value);
+            if(cueTypes.isEmpty())
+            {
+                //This would be an attribute without a query type attached
+                return new MathQueryProcessResults(false, false);
+            }
+            
+            for(WmeImpl cueType: cueTypes)
+            {
+                if(cueType.attr == predefinedSyms.smem_sym_max)
+                {
+                    if(uniqueMathQueryElements.contains(predefinedSyms.smem_sym_max))
+                    {
+                        return new MathQueryProcessResults(false, false);
+                    }
+                    else
+                    {
+                        uniqueMathQueryElements.add(predefinedSyms.smem_sym_max);
+                    }
+                    needFullSearch = true;
+                    _smem_process_cue_wme(cue_p, true, weighted_pq, new MathQueryMax());
+                    
+                }
+                else if(cueType.attr == predefinedSyms.smem_sym_min)
+                {
+                    if(uniqueMathQueryElements.contains(predefinedSyms.smem_sym_min))
+                    {
+                        return new MathQueryProcessResults(false, false);
+                    }
+                    else
+                    {
+                        uniqueMathQueryElements.add(predefinedSyms.smem_sym_min);
+                    }
+                    needFullSearch = true;
+                    _smem_process_cue_wme(cue_p, true, weighted_pq, new MathQueryMin());
+                    
+                }
+                else if(cueType.attr == predefinedSyms.smem_sym_less)
+                {
+                    if(cueType.value.asDouble() != null)
+                    {
+                        _smem_process_cue_wme(cue_p, true, weighted_pq, new MathQueryLess(cueType.value.asDouble().getValue()));
+                    }
+                    else if(cueType.value.asInteger() != null)
+                    {
+                        _smem_process_cue_wme(cue_p, true, weighted_pq, new MathQueryLess(cueType.value.asInteger().getValue()));
+                    }
+                    else
+                    {
+                        //There isn't a valid value to compare against
+                        return new MathQueryProcessResults(false, false);
+                    }
+                }
+            }
+            
+        }
+        return new MathQueryProcessResults(needFullSearch, true);
+    }
+    
+    long /* smem_lti_id */smem_process_query(IdentifierImpl state, IdentifierImpl query, IdentifierImpl negquery, IdentifierImpl math, Set<Long> /* smem_lti_set */prohibit, Set<WmeImpl> cue_wmes, List<SymbolTriple> meta_wmes, List<SymbolTriple> retrieval_wmes)
             throws SQLException
     {
-        return smem_process_query(state, query, negquery, prohibit, cue_wmes, meta_wmes, retrieval_wmes, smem_query_levels.qry_full);
+        return smem_process_query(state, query, negquery, math, prohibit, cue_wmes, meta_wmes, retrieval_wmes, smem_query_levels.qry_full);
     }
 
     /**
@@ -2441,12 +2537,15 @@ public class DefaultSemanticMemory implements SemanticMemory
      * @return
      * @throws SQLException
      */
-    long /* smem_lti_id */smem_process_query(IdentifierImpl state, IdentifierImpl query, IdentifierImpl negquery, Set<Long> /* smem_lti_set */prohibit, Set<WmeImpl> cue_wmes, List<SymbolTriple> meta_wmes, List<SymbolTriple> retrieval_wmes,
+    long /* smem_lti_id */smem_process_query(IdentifierImpl state, IdentifierImpl query, IdentifierImpl negquery, IdentifierImpl mathQuery, Set<Long> /* smem_lti_set */prohibit, Set<WmeImpl> cue_wmes, List<SymbolTriple> meta_wmes, List<SymbolTriple> retrieval_wmes,
             smem_query_levels query_level) throws SQLException
     {
         final SemanticMemoryStateInfo smem_info = smem_info(state);
         final List<WeightedCueElement> weighted_cue = new ArrayList<WeightedCueElement>();
         boolean good_cue = true;
+        
+        //This is used when doing math queries that need to look at more that just the first valid element
+        boolean needFullSearch = false;
 
         long /* smem_lti_id */king_id = 0;
 
@@ -2475,11 +2574,18 @@ public class DefaultSemanticMemory implements SemanticMemory
 
                     if (good_cue)
                     {
-                        good_cue = _smem_process_cue_wme(cue_p, true, weighted_pq);
+                        good_cue = _smem_process_cue_wme(cue_p, true, weighted_pq, null);
                     }
                 }
             }
-
+            
+            //Look through while were here, so that we can make sure the attributes we need are in the results
+            if(mathQuery != null){
+                MathQueryProcessResults mpr = processMathQuery(mathQuery, weighted_pq);
+                good_cue = mpr.goodCue;
+                needFullSearch = mpr.needFullSearch;
+            }
+            
             // negative que - if present
             if (negquery != null)
             {
@@ -2494,7 +2600,7 @@ public class DefaultSemanticMemory implements SemanticMemory
 
                     if (good_cue)
                     {
-                        good_cue = _smem_process_cue_wme(cue_p, false, weighted_pq);
+                        good_cue = _smem_process_cue_wme(cue_p, false, weighted_pq, null);
                     }
                 }
             }
@@ -2614,7 +2720,7 @@ public class DefaultSemanticMemory implements SemanticMemory
                                                 // soar_module::row );
                     }
 
-                    while ((king_id == 0) && ((more_rows) || (!plentiful_parents.isEmpty())))
+                    while (((king_id == 0) || (needFullSearch)) && ((more_rows) || (!plentiful_parents.isEmpty())))
                     {
                         // choose next candidate (db vs. priority queue)
                         {
@@ -2655,8 +2761,9 @@ public class DefaultSemanticMemory implements SemanticMemory
                             for (; ((good_cand) && (it.hasNext()));)
                             {
                                 final WeightedCueElement next_element = it.next();
-
-                                if (next_element == cand_set)
+                                
+                                //If the cand_set is a math query, we care about more than its existence 
+                                if (next_element == cand_set && next_element.mathElement == null)
                                 {
                                     continue;
                                 }
@@ -2684,12 +2791,46 @@ public class DefaultSemanticMemory implements SemanticMemory
                                 // all require own id, attribute
                                 q2.setLong(1, cand);
                                 q2.setLong(2, next_element.attr_hash);
-
+                                
                                 final ResultSet q2rs = q2.executeQuery();
                                 try
                                 {
                                     has_feature = q2rs.next();
-                                    good_cand = ((next_element.pos_element) ? (has_feature) : (!has_feature));
+                                    boolean mathQueryMet = false;
+                                    if(next_element.mathElement != null && has_feature)
+                                    {
+                                        do{
+                                            long valueHash = q2rs.getLong(2);
+                                            db.hash_rev_type.setLong(1, valueHash);
+                                            ResultSet rs = db.hash_rev_type.executeQuery(); 
+                                            //If this hash wasn't in the table, there isn't a value to work with
+                                            if(!rs.next())
+                                            {
+                                                good_cand = false;
+                                            }
+                                            else
+                                            {
+                                                int valueType = rs.getInt(1);
+                                                //Not using the built in hash reverse because I want the raw type, not the symbol
+                                                switch(valueType)
+                                                {
+                                                    case Symbols.FLOAT_CONSTANT_SYMBOL_TYPE:
+                                                        mathQueryMet |= next_element.mathElement.valueIsAcceptable(smem_reverse_hash_float(valueHash));
+                                                        break;
+                                                    case Symbols.INT_CONSTANT_SYMBOL_TYPE:
+                                                        mathQueryMet |= next_element.mathElement.valueIsAcceptable(smem_reverse_hash_int(valueHash));
+                                                        break;
+                                                }
+                                            }
+                                            rs.close();
+                                        //Go through the all the attribute records, to find the best match for a math query 
+                                        }while(q2rs.next());
+                                        good_cand = mathQueryMet;
+                                    }
+                                    else
+                                    {
+                                        good_cand = ((next_element.pos_element) ? (has_feature) : (!has_feature));
+                                    }
                                     if (!good_cand)
                                     {
                                         break;
@@ -2704,6 +2845,17 @@ public class DefaultSemanticMemory implements SemanticMemory
                             if (good_cand)
                             {
                                 king_id = cand;
+                                for(WeightedCueElement wce: weighted_cue){
+                                    if(wce.mathElement != null){
+                                        wce.mathElement.commit();
+                                    }
+                                }
+                            }else{
+                                for(WeightedCueElement wce: weighted_cue){
+                                    if(wce.mathElement != null){
+                                        wce.mathElement.rollback();
+                                    }
+                                }
                             }
                         }
                     }
@@ -3819,6 +3971,7 @@ public class DefaultSemanticMemory implements SemanticMemory
                 IdentifierImpl retrieve = null;
                 IdentifierImpl query = null;
                 IdentifierImpl negquery = null;
+                IdentifierImpl math = null;
                 store.clear();
                 prohibit.clear();
                 path_type path = path_type.blank_slate;
@@ -3873,6 +4026,18 @@ public class DefaultSemanticMemory implements SemanticMemory
                             if ((w_p.value.asIdentifier() != null) && ((path == path_type.blank_slate) || (path == path_type.cmd_query)) && (w_p.value.asIdentifier().smem_lti != 0))
                             {
                                 prohibit.add(w_p.value.asIdentifier()); // push_back
+                                path = path_type.cmd_query;
+                            }
+                            else
+                            {
+                                path = path_type.cmd_bad;
+                            }
+                        }
+                        else if (w_p.attr == predefinedSyms.smem_sym_math_query)
+                        {
+                            if ((w_p.value.asIdentifier() != null) && ((path == path_type.blank_slate) || (path == path_type.cmd_query)) && (math == null))
+                            {
+                                math = w_p.value.asIdentifier();
                                 path = path_type.cmd_query;
                             }
                             else
@@ -3952,7 +4117,7 @@ public class DefaultSemanticMemory implements SemanticMemory
                             prohibit_lti.add(sym_p.smem_lti);
                         }
 
-                        smem_process_query(state, query, negquery, prohibit_lti, cue_wmes, meta_wmes, retrieval_wmes);
+                        smem_process_query(state, query, negquery, math, prohibit_lti, cue_wmes, meta_wmes, retrieval_wmes);
 
                         // add one to the cbr stat
                         stats.queries.set(stats.queries.get() + 1);
