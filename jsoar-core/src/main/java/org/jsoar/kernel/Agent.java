@@ -54,7 +54,6 @@ import org.jsoar.kernel.tracing.Trace.WmeTraceType;
 import org.jsoar.kernel.tracing.TraceFormatRestriction;
 import org.jsoar.kernel.tracing.TraceFormats;
 import org.jsoar.kernel.wma.DefaultWorkingMemoryActivation;
-import org.jsoar.kernel.wma.DefaultWorkingMemoryActivationParams;
 import org.jsoar.kernel.wma.DefaultWorkingMemoryActivationParams.ActivationChoices;
 import org.jsoar.runtime.ThreadedAgent;
 import org.jsoar.util.Arguments;
@@ -142,7 +141,7 @@ public class Agent extends AbstractAdaptable implements AgentRunController
     private final DefaultSemanticMemory smem = new DefaultSemanticMemory(this);
     private final DefaultEpisodicMemory epmem = new DefaultEpisodicMemory(this);
     
-    private final Rete rete = new Rete(trace, syms, epmem, smem);
+    private final Rete rete = new Rete(trace, syms, epmem, smem, rl.getParams());
     private final SoarReteListener soarReteListener = new SoarReteListener(this, rete);
     
     private final DecisionManipulation decisionManip = new DecisionManipulation(decider, random);
@@ -255,7 +254,9 @@ public class Agent extends AbstractAdaptable implements AgentRunController
         installDefaultTraceFormats();
         
         if (initializeAgent)
-            this.initialize();
+        {
+        	this.initialize();
+        }
     }
     
     /**

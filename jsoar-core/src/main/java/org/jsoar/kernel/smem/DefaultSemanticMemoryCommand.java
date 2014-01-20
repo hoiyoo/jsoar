@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringReader;
 import java.io.StringWriter;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
@@ -30,7 +31,6 @@ import org.jsoar.kernel.smem.DefaultSemanticMemoryParams.MergeChoices;
 import org.jsoar.kernel.smem.DefaultSemanticMemoryParams.MirroringChoices;
 import org.jsoar.kernel.smem.DefaultSemanticMemoryParams.Optimization;
 import org.jsoar.kernel.smem.DefaultSemanticMemoryParams.PageChoices;
-import org.jsoar.kernel.smem.DefaultSemanticMemoryParams.SetWrapperLong;
 import org.jsoar.kernel.tracing.Printer;
 import org.jsoar.util.ByRef;
 import org.jsoar.util.JdbcTools;
@@ -218,7 +218,29 @@ class DefaultSemanticMemoryCommand implements SoarCommand
         final PropertyKey<?> key = DefaultSemanticMemoryParams.getProperty(smem.getParams().getProperties(), name);
         if(key == null)
         {
-            throw new SoarException("Unknown parameter '" + name + "'");
+            if (name.equals("database"))
+            {
+                PropertyKey<?> pathProperty = DefaultSemanticMemoryParams.getProperty(smem.getParams().getProperties(), "path");
+                if (pathProperty == null)
+                {
+                    throw new SoarException("Path is null.");
+                }
+                
+                String path = smem.getParams().getProperties().get(pathProperty).toString();
+                
+                if (path.equals(SemanticMemoryDatabase.IN_MEMORY_PATH))
+                {
+                    return "memory";
+                }
+                else
+                {
+                    return "file";
+                }
+            }
+            else
+            {
+                throw new SoarException("Unknown parameter '" + name + "'");
+            }
         }
         return smem.getParams().getProperties().get(key).toString();
     }
@@ -305,6 +327,23 @@ class DefaultSemanticMemoryCommand implements SoarCommand
             {
                 props.set(DefaultSemanticMemoryParams.MIRRORING, MirroringChoices.valueOf(value));
             }
+            else if (name.equals("database"))
+            {
+                if (value.equals("memory"))
+                {
+                    props.set(DefaultSemanticMemoryParams.PATH, SemanticMemoryDatabase.IN_MEMORY_PATH);
+                    return "SMem| database = memory";
+                }
+                else if (value.equals("file"))
+                {
+                    props.set(DefaultSemanticMemoryParams.PATH, "");
+                    return "SMem| database = file";
+                }
+                else
+                {
+                    throw new SoarException("Invalid value for SMem database parameter");
+                }
+            }
             else
             {
                 throw new SoarException("Unknown smem parameter '" + name + "'");
@@ -365,7 +404,53 @@ class DefaultSemanticMemoryCommand implements SoarCommand
             {
                 throw new SoarException(e);
             }
-            pw.printf(PrintHelper.generateItem("Memory Usage:", p.mem_usage.get(), 40));
+            Statement s = null;
+            long pageCount = 0;
+            long pageSize = 0;
+            try
+            {
+                s = smem.getDatabase().getConnection().createStatement();
+                
+                ResultSet rs = null;
+                try
+                {
+                    rs = s.executeQuery("PRAGMA page_count");
+                    pageCount = rs.getLong(0 + 1);
+                }
+                finally
+                {
+                    rs.close();
+                }
+                
+                try
+                {
+                    rs = s.executeQuery("PRAGMA page_size");
+                    pageSize = rs.getLong(0 + 1);
+                }
+                finally
+                {
+                    rs.close();
+                }
+            }
+            catch (SQLException e)
+            {
+                throw new RuntimeException(e);
+            }
+            finally
+            {
+                try
+                {
+                    s.close();
+                }
+                catch (SQLException e)
+                {
+                    throw new RuntimeException(e);
+                }
+            }
+            
+            p.mem_usage.set(pageCount * pageSize);
+                        
+            pw.printf(PrintHelper.generateItem("Memory Usage:", new Double(p.mem_usage.get()) / 1024.0 + " KB", 40));
             pw.printf(PrintHelper.generateItem("Memory Highwater:", p.mem_high.get(), 40));
             pw.printf(PrintHelper.generateItem("Retrieves:", p.retrieves.get(), 40));
             pw.printf(PrintHelper.generateItem("Queries:", p.queries.get(), 40));
@@ -458,9 +543,39 @@ class DefaultSemanticMemoryCommand implements SoarCommand
         pw.printf(PrintHelper.generateSection("Storage", 40));
         
         pw.printf(PrintHelper.generateItem("driver:", p.driver.get(), 40));
+        
+        String nativeOrPure = null;
+        try
+        {
+            SemanticMemoryDatabase db = smem.getDatabase();
+            if (db != null)
+            {
+                nativeOrPure = db.getConnection().getMetaData().getDriverVersion();
+            }
+            else
+            {
+                nativeOrPure = "Not connected to database";
+            }
+        }
+        catch (SQLException e)
+        {
+            throw new RuntimeException(e);
+        }
+        
+        pw.printf(PrintHelper.generateItem("driver-type:", nativeOrPure, 40));
         pw.printf(PrintHelper.generateItem("protocol:", p.protocol.get(), 40));
         pw.printf(PrintHelper.generateItem("append-database:", p.append_db.get(), 40));
-        pw.printf(PrintHelper.generateItem("path:", p.path.get(), 40));
+        
+        String database = "memory";
+        String path = "";
+        if (!p.path.get().equals(SemanticMemoryDatabase.IN_MEMORY_PATH))
+        {
+            database = "file";
+            path = p.path.get();
+        }
+        
+        pw.printf(PrintHelper.generateItem("database:", database, 40));
+        pw.printf(PrintHelper.generateItem("path:", path, 40));
         pw.printf(PrintHelper.generateItem("lazy-commit:", p.lazy_commit.get(), 40));
         
         pw.printf(PrintHelper.generateSection("Activation", 40));
@@ -496,50 +611,68 @@ class DefaultSemanticMemoryCommand implements SoarCommand
         long /*smem_lti_id*/ lti_id = 0 /*NIL*/;
         int depth = 1;
         
+        smem.smem_attach();
+        
         if (args.length > i && args.length <= i + 3)
         {
-            char name_letter = 0;
-            long name_number = 0;
+            StringBuilder viz = new StringBuilder("");
             
-            if (args.length == i + 2)
+            if (args.length >= i + 2)
             {
+                boolean allowIdsOld = lexer.isAllowIds(); // not sure if we have to do this, but better safe than sorry -- store old value and restore it after we're done
+                lexer.setAllowIds(true);
                 lexer.get_lexeme_from_string(args[i+1]);
                 if (lexer.getCurrentLexeme().type == LexemeType.IDENTIFIER)
                 {
+                    final char name_letter = lexer.getCurrentLexeme().id_letter;
+                    final long name_number = lexer.getCurrentLexeme().id_number;
+                    
                     if (smem.getDatabase() != null)
                     {
                         lti_id = smem.smem_lti_get_id(name_letter, name_number);
+                        if(lti_id == 0)
+                        {
+                            throw new SoarException("'" + lexer.getCurrentLexeme() + "' is not an LTI");
+                        }
                         
                         if ( ( lti_id != 0 /*NIL*/ ) && args.length == i + 3)
                         {
-                            depth = Integer.parseInt(args[i+2]);
+                            try
+                            {
+                                depth = Integer.parseInt(args[i+2]);
+                            }
+                            catch(NumberFormatException e)
+                            {
+                                throw new SoarException("Expected integer for depth, got '" + args[i+2] + "'");
+                            }
                         }
                     }
+                    smem.smem_print_lti(lti_id, depth, viz);
                 }
-            }
-            
-            ByRef<String> viz = new ByRef<String>(new String());
-            
-            if (lti_id == 0)
-            {
-                smem.smem_print_store(viz);
+                else
+                {
+                    throw new SoarException("Expected identifier, got '" + lexer.getCurrentLexeme() + "'");
+                }
+                
+                lexer.setAllowIds(allowIdsOld); // restore original value
+                
             }
             else
             {
-                smem.smem_print_lti(lti_id, depth, viz);
+                smem.smem_print_store(viz);
             }
             
-            if (viz.value.length() == 0)
+            if (viz.length() == 0)
             {
                 throw new SoarException("SMem| Semantic memory is empty.");
             }
             
             pw.printf(PrintHelper.generateHeader("Semantic Memory", 40));
-            pw.printf(viz.value);
+            pw.printf(viz.toString());
         }
         else
         {
-            throw new SoarException( "Invalid attribute." );
+            throw new SoarException( "Too many arguments." );
         }
         
         pw.flush();

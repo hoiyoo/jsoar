@@ -13,6 +13,7 @@ import org.jsoar.kernel.Production;
 import org.jsoar.kernel.ProductionManager;
 import org.jsoar.kernel.ProductionType;
 import org.jsoar.kernel.SoarException;
+import org.jsoar.kernel.learning.rl.ReinforcementLearningParams;
 import org.jsoar.kernel.memory.Wme;
 import org.jsoar.kernel.memory.WorkingMemoryPrinter;
 import org.jsoar.kernel.symbols.Symbol;
@@ -41,7 +42,7 @@ public class PrintCommand implements SoarCommand
 
     private enum Options
     {
-        all, chunks, Defaults, depth, Filename, full, internal, justifications, 
+        all, chunks, Defaults, depth, exact, Filename, full, internal, justifications, 
         name, operators, rl, stack, States, Template, tree, user, varprint,
     }
 
@@ -54,6 +55,7 @@ public class PrintCommand implements SoarCommand
         .newOption(Options.chunks)
         .newOption(Options.Defaults)
         .newOption(Options.depth).requiredArg()
+        .newOption(Options.exact)
         .newOption(Options.Filename)
         .newOption(Options.full)
         .newOption(Options.internal)
@@ -145,6 +147,7 @@ public class PrintCommand implements SoarCommand
             {
                 agent.getPrinter().startNewLine();
                 wmp.setInternal(options.has(Options.internal));
+                wmp.setExact(options.has(Options.exact));
 
                 // these are ignored if pattern
                 wmp.setDepth(depth);
@@ -248,6 +251,13 @@ public class PrintCommand implements SoarCommand
 
             if (prod.rlRuleInfo != null)
             {
+                // Do extra logging if this agent is in delta bar delta mode.
+            	if (agent.getProperties().get(ReinforcementLearningParams.DECAY_MODE)
+            			== ReinforcementLearningParams.DecayMode.delta_bar_delta_decay)
+                {
+                  p.print(" %y", agent.getSymbols().createDouble(prod.rlRuleInfo.rl_delta_bar_delta_beta ) );
+                  p.print(" %y", agent.getSymbols().createDouble(prod.rlRuleInfo.rl_delta_bar_delta_h ) );
+                }
                 p.print("%f  ", prod.rlRuleInfo.rl_update_count);
                 p.print("%s", prod.getFirstAction().asMakeAction().referent);
             }

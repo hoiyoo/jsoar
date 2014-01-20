@@ -10,7 +10,6 @@ import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.lang.ProcessBuilder.Redirect;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.text.DateFormat;
@@ -24,9 +23,6 @@ import java.util.List;
 import java.util.Set;
 
 import org.jsoar.kernel.SoarException;
-import org.jsoar.performancetesting.Configuration.InvalidTestNameException;
-import org.jsoar.performancetesting.Configuration.MalformedTestCategory;
-import org.jsoar.performancetesting.Configuration.UnknownPropertyException;
 import org.jsoar.performancetesting.csoar.CSoarTestFactory;
 import org.jsoar.performancetesting.jsoar.JSoarTestFactory;
 import org.jsoar.util.commands.OptionProcessor;
@@ -52,7 +48,7 @@ public class PerformanceTesting
     private static final int EXIT_FAILURE_TEST = 254;
     private static final int EXIT_FAILURE_CONFIGURATION = 253;
     
-    private static TestSettings defaultTestSettings = new TestSettings(false, false, 0, 0, 0, false, 1, "", "", new ArrayList<String>(), "");
+    private static TestSettings defaultTestSettings = new TestSettings(false, false, 0, 0, new ArrayList<Integer>(), false, 1, "", "", new ArrayList<String>(), "");
     
     // Locals
     
@@ -73,6 +69,9 @@ public class PerformanceTesting
     private boolean outputToSummaryFile = true;
     private boolean singleTest = false;
     private Set<Configuration.ConfigurationTest> configurationTests;
+    
+    // Used for killing the current child process in the shutdown hook
+    private Process currentChildProcess = null;
     
     /**
      * @param args
@@ -111,6 +110,26 @@ public class PerformanceTesting
      */
     public int doPerformanceTesting(String[] args)
     {
+        // This adds a shutdown hook to the runtime
+        // to kill any child processes spawned that
+        // are still running.  This handles CTRL-C
+        // as well as normal kills, SIGKILL and
+        // SIGHALT I believe
+        // - ALT
+        Runtime.getRuntime().addShutdownHook(new Thread()
+        {
+           @Override
+           public void run()
+           {
+               if (currentChildProcess != null)
+               {
+                   currentChildProcess.destroy();
+               }
+           }
+        });
+        
+        // Parse the CLI options and Configuration options
+        // if there are any
         int optionsParseResult = parseOptions(args);
         
         if (optionsParseResult != NON_EXIT)
@@ -118,18 +137,33 @@ public class PerformanceTesting
         	return optionsParseResult;
         }
         
+        // If this is not a single test and configurationTests is null
+        // exit because the configuration file didn't work out
+        // or something else bad happened.
+        if (!singleTest && configurationTests == null)
+        {
+            out.println("Did not load any tests or configuration.");
+            usage();
+            return EXIT_SUCCESS;
+        }
+        
+        // Only output starting information like this if we're not in a child process
         if (!singleTest)
         {
             out.printf("Performance Testing - Starting Tests - %d Tests Loaded\n\n", configurationTests.size());
             out.flush();
         }
         
+        // If we have multiple tests to run, then run
+        // them in children JVMs
         if (configurationTests != null)
         {
             return runTestsInChildrenJVMs(configurationTests);
         }
         else
         {
+            // In this case, we are running just one test which means
+            // the test is either going to be jsoarTest or csoarTest.
             if (jsoarTest != null)
             {
                 return runTest(new TestRunner(jsoarTest, out));
@@ -155,20 +189,25 @@ public class PerformanceTesting
                     "   -T, --test              Manually specify a test to load.\n" +
                     "   -o, --output            The directory for all the CSV test results.\n" +
                     "   -w, --warmup            Specify the number of warm up runs for JSoar.\n" +
-                    "   -c, --category              Specify the test category.\n" +
+                    "   -c, --category          Specify the test category.\n" +
                     "   -j, --jsoar             Run the tests in JSoar.\n" +
                     "   -s, --soar              Run the tests in CSoar specifying the directory as well.\n" +
-                    "   -u, --uniqueJVMs        Whether to run the tests in seperate jvms or not." +
-                    "   -d, --decisions         Run the tests specified number of decisions." +
-                    "   -r, --run               The run number." +
-                    "   -n, --name              Used in conjunction with -T, specifies the test's name." +
-                    "   -N, --nosummary         Don't output results to a summary file." +
-                    "   -S, --single            Don't output any of the start and done, only the results." +
+                    "   -u, --uniqueJVMs        Whether to run the tests in seperate jvms or not.\n" +
+                    "   -d, --decisions         Run the tests specified number of decisions.\n" +
+                    "   -r, --run               The run number.\n" +
+                    "   -n, --name              Used in conjunction with -T, specifies the test's name.\n" +
+                    "   -N, --nosummary         Don't output results to a summary file.\n" +
                     "\n" +
                     "Note: When running with CSoar, CSoar's bin directory must be on the system\n" +
-                    "      path or in java.library.path or specified in a configuration directory.\n");
+                    "      path or in java.library.path or specified in a configuration file.\n");
     }
     
+    /**
+     * Parses the CLI and Configuration Options
+     * 
+     * @param args
+     * @return whether the parsing was successful or not
+     */
     private int parseOptions(String[] args)
     {
         //This is the same options processor for JSoar and so has the same limitations.
@@ -197,22 +236,35 @@ public class PerformanceTesting
             usage();
             return EXIT_SUCCESS;
         }
-
-        if (options.has(Options.help))
+        
+        if (options.has(Options.help) || args.length == 0)
         {
             usage();
             return EXIT_SUCCESS;
         }
         
+        // If there is a configuration option,
+        // ignore any CLI options beyond that.
         if (options.has(Options.Configuration))
         {
             parseConfiguration(options);
+            
             return NON_EXIT;
         }
         
+        // Since we don't have a configuration
+        // option, parse the CLI arguments.
         return parseCLIOptions(options);
     }
     
+    /**
+     * Parse a configuration file from a given options processor.
+     * This will do any validity checks on the configuration file
+     * as well.
+     * 
+     * @param options
+     * @return whether the parsing was successful or not.
+     */
     private int parseConfiguration(OptionProcessor<Options> options)
     {
         String configurationPath = options.get(Options.Configuration);
@@ -231,7 +283,7 @@ public class PerformanceTesting
         {            
             result = config.parse();
         }
-        catch (IOException | UnknownPropertyException | InvalidTestNameException | MalformedTestCategory e)
+        catch (IOException e)
         {
             out.println(e.getMessage());
             return EXIT_FAILURE;
@@ -256,6 +308,12 @@ public class PerformanceTesting
         return NON_EXIT;
     }
     
+    /**
+     * Parse the CLI arguments
+     * 
+     * @param options
+     * @return whether the parsing was successful or not
+     */
     private int parseCLIOptions(OptionProcessor<Options> options)
     {
         if (options.has(Options.output))
@@ -288,7 +346,11 @@ public class PerformanceTesting
         
         if (options.has(Options.decisions))
         {
-            defaultTestSettings.setDecisionCycles(Integer.parseInt(options.get(Options.decisions)));
+           List<Integer> decisions = new ArrayList<Integer>();
+           
+           decisions.add(Integer.parseInt(options.get(Options.decisions)));
+           
+            defaultTestSettings.setDecisionCycles(decisions);
         }
         
         if (options.has(Options.run))
@@ -356,8 +418,9 @@ public class PerformanceTesting
         Set<String> previousSummaryFiles = new HashSet<String>();
         
         // Since we have more than one test to run, spawn a separate JVM for each run.
+        int i = 0;
         for (Configuration.ConfigurationTest test : tests)
-        {
+        {            
             File dir = new File(test.getTestSettings().getCSVDirectory());
             
             if (!dir.exists())
@@ -387,6 +450,10 @@ public class PerformanceTesting
                 
                 previousSummaryFiles.add(summaryFilePath);
             }
+            
+            out.println("--------------------------------------------------");
+            out.println("Starting " + test.getTestName() + " Test (" + (++i) + "/" + tests.size() + ")");
+            out.println("--------------------------------------------------");
             
             if (test.getTestSettings().isJSoarEnabled())
             {
@@ -428,7 +495,7 @@ public class PerformanceTesting
         }
         catch (IOException | URISyntaxException e1)
         {
-            throw new AssertionError(e1);
+            throw new RuntimeException(e1);
         }
         
         // Replaces windows style paths with unix.
@@ -442,6 +509,9 @@ public class PerformanceTesting
             // This is going to make the assumption that we're in eclipse
             // and so it will assume a repository structure and if this
             // changes or is wrong, this code will break and this will fail.
+           
+            // If we are in a jar, then the jar file will contain jsoar-core
+            // internally and so we don't need to setup the classpath
             // - ALT
             
             Character pathSeperator = File.pathSeparatorChar;
@@ -473,6 +543,8 @@ public class PerformanceTesting
                 }
             }
             
+            // Add the database driver from jsoar-core to the class path
+            // and any other dependencies in here
             directory = new File(originalPath + "/../../jsoar-core/lib/db");
             listOfFiles = directory.listFiles();
             for (File file : listOfFiles)
@@ -526,8 +598,6 @@ public class PerformanceTesting
         arguments.add(test.getTestSettings().getCSVDirectory());
         arguments.add("--warmup");
         arguments.add(new Integer(test.getTestSettings().getWarmUpCount()).toString());
-        arguments.add("--decisions");
-        arguments.add(new Integer(test.getTestSettings().getDecisionCycles()).toString());
         arguments.add("--name");
         arguments.add(test.getTestName());
         arguments.add("--nosummary");
@@ -546,6 +616,7 @@ public class PerformanceTesting
         {
             arguments.add("--soar");
 
+            // For each version of CSoar, run a child JVM
             for (String path : test.getTestSettings().getCSoarVersions())
             {
                 List<String> argumentsPerTest = new ArrayList<String>(arguments);
@@ -565,55 +636,127 @@ public class PerformanceTesting
         }
     }
     
+    /**
+     * This runs a test in a child JVM with the given arguments
+     * 
+     * @param test
+     * @param arguments
+     * @return whether running the child JVM was successful or not
+     */
     private int runJVM(Configuration.ConfigurationTest test, List<String> arguments)
     {
         int exitCode = 0;
         
+        // Run the test in a new child JVM for each run
         for (int i = 1; i <= test.getTestSettings().getRunCount();i++)
         {
             List<String> argumentsPerRun = new ArrayList<String>(arguments);
             argumentsPerRun.add("--run");
             argumentsPerRun.add(new Integer(i).toString());
-
-            ProcessBuilder processBuilder = new ProcessBuilder(argumentsPerRun);
-
-            // Redirect the output so we can see what is going on
-            processBuilder.redirectError(Redirect.INHERIT);
-            processBuilder.redirectOutput(Redirect.INHERIT);
-
-            Process process;
-            try
+            
+            out.println("Starting Test - " + test.getTestName() + " - " + i + "/" + test.getTestSettings().getRunCount());
+            
+            // For each decision cycle count in the list, run a new child JVM
+            for (Integer j : test.getTestSettings().getDecisionCycles())
             {
-                process = processBuilder.start();
+                List<String> argumentsPerCycle = new ArrayList<String>(argumentsPerRun);
+                argumentsPerCycle.add("--decisions");
+                argumentsPerCycle.add(j.toString());
+                
+                String decisionsString;
+                
+                if (j == 0)
+                {
+                    decisionsString = "Forever";
+                }
+                else
+                {
+                    decisionsString = "for " + j + " decisions";
+                }
+                
+                out.println("Running " + decisionsString);
+                out.flush();
+                
+                // This is Java 1.7 only
+                
+                // Create a new process builder for the child JVM
+                ProcessBuilder processBuilder = new ProcessBuilder(argumentsPerCycle);
+                
+                Process process = null;
+                try
+                {
+                    // Start the process
+                    process = processBuilder.start();
+                    // Setup the parameters for the shutdown hook,
+                    // in case we're killed off early.
+                    currentChildProcess = process;
+                    
+                    // Create some StreamGobblers to handle output to the screen
+                    // We don't redirectIO here because on Windows in CMD, we
+                    // won't redirect to the console output.  Instead we will
+                    // redirect to the original java System.out which isn't the
+                    // screen.  This means that the output both, won't show up
+                    // and we could potentially crash the JVM if we output enough.
+                    // - ALT
+                    StreamGobbler outputGobbler = new StreamGobbler(process.getInputStream(), out);
+                    StreamGobbler errorGobbler = new StreamGobbler(process.getErrorStream(), out);
+                    
+                    // Start the gobblers
+                    outputGobbler.start();
+                    errorGobbler.start();
+                    
+                    // Wait for the process to exit and then get the exit code
+                    exitCode = process.waitFor();
+                    // Make sure we don't try to kill a non-existent process
+                    // if we are shutdown after this.
+                    currentChildProcess = null;
+                }
+                catch (IOException | InterruptedException e)
+                {
+                    throw new RuntimeException(e);
+                }
+                finally
+                {
+                    // Make sure to always destroy the process if exceptions occur
+                    process.destroy();
+                }
+                
+                try
+                {
+                    Thread.sleep(1000);
+                }
+                catch (InterruptedException e)
+                {} // Do nothing.  We still need to flush the output.
+                
+                // Flush the output to make sure we have everything, probably not needed
+                // but there are cases when it is.
+                out.flush();
             }
-            catch (IOException e)
-            {
-                throw new RuntimeException(e);
-            }
-            try
-            {
-                exitCode = process.waitFor();
-            }
-            catch (InterruptedException e)
-            {
-                throw new RuntimeException(e);
-            }
-
-            out.flush();
         }
         
         return exitCode;
     }
     
+    /**
+     * Output the results to a summary file for a given test.  This
+     * reads in the individual run results and then computes the summary
+     * for the test.  This summary does not split among seperate decisions!
+     * So if you need decisions to be seperated, you need to create a
+     * seperate test, or modify the code to append per decisions.
+     * 
+     * @param test
+     */
     private void appendToSummaryFile(Configuration.ConfigurationTest test)
     {
         TestSettings settings = test.getTestSettings();
         Table summaryTable = new Table();
         
+        // Magic numbers for table
         for (int k = 0;k < 17;k++)
         {
             Row row = new Row();
             
+            // Construct the table rows
             switch (k)
             {
             case 0:
@@ -677,6 +820,12 @@ public class PerformanceTesting
             summaryTable.addRow(row);
         }
         
+        String csvDirectoryString = test.getTestSettings().getCSVDirectory();
+        
+        String testNameWithoutSpaces = test.getTestName().replaceAll("\\s+", "-");
+        
+        String testDirectoryString = csvDirectoryString + "/" + testNameWithoutSpaces;
+        
         if (settings.isJSoarEnabled())
         {
             // JSoar
@@ -685,50 +834,68 @@ public class PerformanceTesting
             List<Double> decisionCycles = new ArrayList<Double>();
             List<Double> memoryLoads = new ArrayList<Double>();
             
-            String testNameWithoutSpaces = test.getTestName().replaceAll("\\s+", "-");
-            
+            String categoryDirectoryString = testDirectoryString + "/JSoar";
+                                    
             for (int i = 1;i <= settings.getRunCount();i++)
             {
-                File testFile = new File(settings.getCSVDirectory() + "/" + testNameWithoutSpaces + "-JSoar-" + (new Integer(i)).toString() + ".txt");
-                
-                try
+                for (Integer j : settings.getDecisionCycles())
                 {
-                    BufferedReader br = new BufferedReader(new FileReader(testFile));
-                    String line;
-                    // This will skip the first and last fields and only use the total fields
-                    // for getting values since these are individual runs.
+                    String finalTestName = testNameWithoutSpaces;
                     
-                    // CPU Time, Kernel Time, Decisions
-                    for (int j = 0;j <= 10;j++)
+                    if (j != 0)
                     {
-                        line = br.readLine();
-                        
-                        assert(line != null);
-                        
-                        String[] list = line.split("\t");
-                        
-                        switch (j)
-                        {
-                        case 1:
-                            // CPU Time
-                            cpuTimes.add(Double.parseDouble(list[1]));
-                            break;
-                        case 4:
-                            kernelTimes.add(Double.parseDouble(list[1]));
-                            break;
-                        case 7:
-                            decisionCycles.add(Double.parseDouble(list[1]));
-                            break;
-                        case 10:
-                            memoryLoads.add(Double.parseDouble(list[1]));
-                            break;
-                        }
+                        finalTestName += "-" + j;
                     }
-                    br.close();
-                }
-                catch (IOException e)
-                {
-                    throw new AssertionError(e);
+                    else
+                    {
+                        finalTestName += "-Forever";
+                    }
+                    
+                    finalTestName += "-" + i;
+                    
+                    File testFile = new File(categoryDirectoryString + "/" + finalTestName + ".txt");
+
+                    try
+                    {
+                        BufferedReader br = new BufferedReader(new FileReader(testFile));
+                        String line;
+                        // This will skip the first and last fields and only use the total fields
+                        // for getting values since these are individual runs.
+
+                        // CPU Time, Kernel Time, Decisions
+                        for (int k = 0;k <= 10;k++)
+                        {
+                            line = br.readLine();
+
+                            assert(line != null);
+
+                            String[] list = line.split("\t");
+
+                            switch (k)
+                            {
+                            case 1:
+                                // CPU Time
+                                cpuTimes.add(Double.parseDouble(list[1]));
+                                break;
+                            case 4:
+                                kernelTimes.add(Double.parseDouble(list[1]));
+                                break;
+                            case 7:
+                                decisionCycles.add(Double.parseDouble(list[1]));
+                                break;
+                            case 10:
+                                memoryLoads.add(Double.parseDouble(list[1]));
+                                break;
+                            }
+                        }
+                        br.close();
+                    }
+                    catch (IOException e)
+                    {
+                        out.println("Failed to load " + test.getTestName() + " results (" + categoryDirectoryString + "/" + finalTestName + ".txt" + ").  Skipping summary.");
+                        out.flush();
+                        continue;
+                    }
                 }
             }
             
@@ -758,11 +925,11 @@ public class PerformanceTesting
         {
             int column = 3-1;
             
-            String testNameWithoutSpaces = test.getTestName().replaceAll("\\s+", "-");
-            
             for (String csoarPath : test.getTestSettings().getCSoarVersions())
             {
-                String csoarLabel = "-CSoar-" + csoarPath.replaceAll("[^a-zA-Z0-9]+", "") + "-";
+                String csoarLabel = "CSoar-" + csoarPath.replaceAll("[^a-zA-Z0-9]+", "");
+                
+                String categoryDirectoryString = testDirectoryString + "/" + csoarLabel;
                 
                 // CSoar
                 List<Double> cpuTimes = new ArrayList<Double>();
@@ -772,46 +939,64 @@ public class PerformanceTesting
 
                 for (int i = 1;i <= settings.getRunCount();i++)
                 {
-                    File testFile = new File(settings.getCSVDirectory() + "/" + testNameWithoutSpaces + csoarLabel + (new Integer(i)).toString() + ".txt");
-
-                    try
+                    for (Integer j : settings.getDecisionCycles())
                     {
-                        BufferedReader br = new BufferedReader(new FileReader(testFile));
-                        String line;
-                        // This will skip the first and last fields and only use the total fields
-                        // for getting values since these are individual runs.
-
-                        // CPU Time, Kernel Time, Decisions
-                        for (int j = 0;j <= 10;j++)
+                        String finalTestName = testNameWithoutSpaces;
+                        
+                        if (j != 0)
                         {
-                            line = br.readLine();
-
-                            assert(line != null);
-
-                            String[] list = line.split("\t");
-
-                            switch (j)
-                            {
-                            case 1:
-                                // CPU Time
-                                cpuTimes.add(Double.parseDouble(list[2]));
-                                break;
-                            case 4:
-                                kernelTimes.add(Double.parseDouble(list[2]));
-                                break;
-                            case 7:
-                                decisionCycles.add(Double.parseDouble(list[2]));
-                                break;
-                            case 10:
-                                memoryLoads.add(Double.parseDouble(list[2]));
-                                break;
-                            }
+                            finalTestName += "-" + j;
                         }
-                        br.close();
-                    }
-                    catch (IOException e)
-                    {
-                        throw new AssertionError(e);
+                        else
+                        {
+                            finalTestName += "-Forever";
+                        }
+                        
+                        finalTestName += "-" + i;
+                        
+                        File testFile = new File(categoryDirectoryString + "/" + finalTestName + ".txt");
+
+                        try
+                        {
+                            BufferedReader br = new BufferedReader(new FileReader(testFile));
+                            String line;
+                            // This will skip the first and last fields and only use the total fields
+                            // for getting values since these are individual runs.
+
+                            // CPU Time, Kernel Time, Decisions
+                            for (int k = 0;k <= 10;k++)
+                            {
+                                line = br.readLine();
+
+                                assert(line != null);
+
+                                String[] list = line.split("\t");
+
+                                switch (k)
+                                {
+                                case 1:
+                                    // CPU Time
+                                    cpuTimes.add(Double.parseDouble(list[2]));
+                                    break;
+                                case 4:
+                                    kernelTimes.add(Double.parseDouble(list[2]));
+                                    break;
+                                case 7:
+                                    decisionCycles.add(Double.parseDouble(list[2]));
+                                    break;
+                                case 10:
+                                    memoryLoads.add(Double.parseDouble(list[2]));
+                                    break;
+                                }
+                            }
+                            br.close();
+                        }
+                        catch (IOException e)
+                        {
+                            out.println("Failed to load " + test.getTestName() + " results (" + categoryDirectoryString + "/" + finalTestName + ".txt" + ").  Skipping summary.");
+                            out.flush();
+                            continue;
+                        }
                     }
                 }
 
@@ -845,13 +1030,29 @@ public class PerformanceTesting
         summaryTable.writeToCSV(summaryFilePath, '\t', true);
     }
     
+    /**
+     * Convert a double to a string but make sure to get good
+     * precision but not over the top precision.
+     * 
+     * @param d
+     * @return The double as a string
+     */
     private String doubleToString(Double d)
     {
+        // This says to optionally have more numbers
+        // to the left of the decimal point, but at
+        // least have a 0.  It also says to alyways
+        // have at least three significant figures
+        // but potentially up to nine sig-figs.
         DecimalFormat df = new DecimalFormat("#0.000######");
+        
+        // Format the decimal
         return df.format(d);
     }
     
     /**
+     * This runs a test.  This assume we're already in the
+     * child JVM or at least are only ever running one test.
      * 
      * @param testRunners All the tests
      * @param testCategories All the test categories
@@ -862,8 +1063,11 @@ public class PerformanceTesting
         Test test = testRunner.getTest();
         TestSettings settings = test.getTestSettings();
 
-        out.println("Starting Test: " + test.getTestName());
-        out.flush();
+        if (!singleTest)
+        {
+            out.println("Starting Test: " + test.getTestName());
+            out.flush();
+        }
 
         //Construct a table for the data
 
@@ -951,6 +1155,25 @@ public class PerformanceTesting
             out.println("Failed with a Soar Exception: " + e.getMessage());
             return EXIT_FAILURE;
         }
+        catch (RuntimeException e)
+        {
+            if (e.getMessage() != null)
+            {
+                String message = e.getMessage();
+                
+                if (message.equals("Could not load CSoar") && settings.getCSoarVersions().size() > 0)
+                {
+                    message += " - " + settings.getCSoarVersions().get(0);
+                }
+                
+                out.println("Error: " + message);
+            }
+            else
+            {
+                out.println("Critical Failure.  Bailing out of test.");
+            }
+            return EXIT_FAILURE;
+        }
         
         table.setOrAddValueAtLocation(new Double(testRunner.getTotalCPUTime()).toString(),          2-1,   column);
         table.setOrAddValueAtLocation(new Double(testRunner.getAverageCPUTime()).toString(),        3-1,   column);
@@ -968,36 +1191,55 @@ public class PerformanceTesting
 
         if (settings.getCSVDirectory().length() != 0)
         {
-            File outDirectory = new File(test.getTestSettings().getCSVDirectory());
-
-            if (!outDirectory.exists())
-            {
-                outDirectory.mkdirs();
-            }
-
+            String csvDirectoryString = test.getTestSettings().getCSVDirectory();
+            
             String testNameWithoutSpaces = test.getTestName().replaceAll("\\s+", "-");
-
+            
+            String testDirectoryString = csvDirectoryString + "/" + testNameWithoutSpaces;
+            
+            String categoryDirectoryString = null;
+            
+            if (settings.isJSoarEnabled())
+            {
+                categoryDirectoryString = testDirectoryString + "/JSoar";
+            }
+            else
+            {
+                categoryDirectoryString = testDirectoryString + "/CSoar";
+                
+                if (csoarTestFactory.getLabel().length() != 0)
+                {
+                    categoryDirectoryString += "-";
+                    categoryDirectoryString += csoarTestFactory.getLabel().replaceAll("[^a-zA-Z0-9]+", "");
+                }
+            }
+            
+            String finalPathDirectoryString = categoryDirectoryString;
+            
+            File finalPathDirectory = new File(finalPathDirectoryString);
+            
+            if (!finalPathDirectory.exists())
+            {
+                finalPathDirectory.mkdirs();
+            }
+            
+            String finalTestName = testNameWithoutSpaces;
+            
+            if (test.getTestSettings().getDecisionCycles().get(0) != 0)
+            {
+                finalTestName += "-" + test.getTestSettings().getDecisionCycles().get(0);
+            }
+            else
+            {
+                finalTestName += "-Forever";
+            }
+            
             if (runNumber != -1)
             {
-                if (settings.isJSoarEnabled())
-                {
-                    testNameWithoutSpaces += "-JSoar";
-                }
-                else
-                {
-                    testNameWithoutSpaces += "-CSoar";
-                    
-                    if (csoarTestFactory.getLabel().length() != 0)
-                    {
-                        testNameWithoutSpaces += "-";
-                        testNameWithoutSpaces += csoarTestFactory.getLabel().replaceAll("[^a-zA-Z0-9]+", "");
-                    }
-                }
-
-                testNameWithoutSpaces += "-" + (new Integer(runNumber)).toString();
+                finalTestName += "-" + runNumber;
             }
 
-            table.writeToCSV(settings.getCSVDirectory() + "/" + testNameWithoutSpaces + ".txt");
+            table.writeToCSV(finalPathDirectoryString + "/" + finalTestName + ".txt");
 
             if (outputToSummaryFile)
             {
@@ -1011,4 +1253,6 @@ public class PerformanceTesting
 
         return NON_EXIT;
     }
+
+    
 }

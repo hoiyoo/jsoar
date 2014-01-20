@@ -6,7 +6,15 @@ package org.jsoar.performancetesting;
 import java.util.List;
 
 /**
- * @author Alex
+ * A class for holding test settings.  This is used all over
+ * the place for getting individual test settings.  It is
+ * usually constructed with a default test setting object
+ * (another TestSettings object) and then any additional
+ * assignments overwrite those values.  This means there is
+ * less overhead for trying to determine the settings for a
+ * test.
+ * 
+ * @author ALT
  *
  */
 public class TestSettings
@@ -17,7 +25,7 @@ public class TestSettings
     private int runCount;
     private int warmUpCount;
     
-    private int decisionCycles;
+    private List<Integer> decisionCycles;
     
     private boolean useSeed;
     private long seed;
@@ -50,7 +58,7 @@ public class TestSettings
         jvmSettings = other.getJVMSettings();
     }
     
-    public TestSettings(boolean jsoarEnabled, boolean csoarEnabled, int runCount, int warmUpCount, int decisionCycles, boolean useSeed, long seed, String csvDirectory, String summaryFile, List<String> csoarDirectories, String jvmSettings)
+    public TestSettings(boolean jsoarEnabled, boolean csoarEnabled, int runCount, int warmUpCount, List<Integer> decisionCycles, boolean useSeed, long seed, String csvDirectory, String summaryFile, List<String> csoarDirectories, String jvmSettings)
     {
         this.jsoarEnabled = jsoarEnabled;
         this.csoarEnabled = csoarEnabled;
@@ -73,7 +81,7 @@ public class TestSettings
         // Sanity check
         if (this.csoarEnabled && csoarDirectories.size() == 0)
         {
-            throw new AssertionError("Sanity Check Failed!  CSoar is enabled but there are no directories specified for it!");
+            throw new RuntimeException("Sanity Check Failed!  CSoar is enabled but there are no directories specified for it!");
         }
     }
     
@@ -117,12 +125,12 @@ public class TestSettings
         return warmUpCount;
     }
     
-    public void setDecisionCycles(int decisionCycles)
+    public void setDecisionCycles(List<Integer> decisionCycles)
     {
         this.decisionCycles = decisionCycles;
     }
     
-    public int getDecisionCycles()
+    public List<Integer> getDecisionCycles()
     {
         return decisionCycles;
     }

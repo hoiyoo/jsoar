@@ -12,6 +12,8 @@ import java.util.Set;
 import org.yaml.snakeyaml.Yaml;
 
 /**
+ * This is a configuration class for parsing the YAML files used
+ * by the performance testing framework.
  * 
  * @author ALT
  *
@@ -23,6 +25,13 @@ public class Configuration
 	 */
 	
 	// Package Private
+    /**
+     * A class for handling tests that we aren't running just yet.
+     * This is basically just a container for the test information.
+     * 
+     * @author ALT
+     *
+     */
     class ConfigurationTest implements Comparable<ConfigurationTest>
     {
         private String testName;
@@ -59,76 +68,6 @@ public class Configuration
     }
     
     /**
-     * Package private classes for exceptions of the configuration class.
-     */
-    
-    // Package Private
-    class UnknownPropertyException extends Exception
-    {
-        /**
-         * 
-         */
-        private static final long serialVersionUID = 463144412019989054L;
-        private final String property;
-        
-        public UnknownPropertyException(String property)
-        {
-            super("Unknown Property: " + property);
-            
-            this.property = property;
-        }
-        
-        public String getProperty()
-        {
-            return property;
-        }
-    }
-    
-    // Package Private
-    class InvalidTestNameException extends Exception
-    {
-        /**
-         * 
-         */
-        private static final long serialVersionUID = -8450373113671237630L;
-        private final String property;
-        
-        public InvalidTestNameException(String property)
-        {
-            super("Test Property is not a Soar File: " + property);
-            
-            this.property = property;
-        }
-        
-        public String getProperty()
-        {
-            return property;
-        }
-    }
-    
-    // Package Private
-    class MalformedTestCategory extends Exception
-    {
-        /**
-         * 
-         */
-        private static final long serialVersionUID = -1914521968698486601L;
-        private final String property;
-        
-        public MalformedTestCategory(String property)
-        {
-            super("Malformed Test Category: " + property);
-            
-            this.property = property;
-        }
-        
-        public String getProperty()
-        {
-            return property;
-        }
-    }
-    
-    /**
      * Class variables
      */
     
@@ -161,11 +100,8 @@ public class Configuration
      * 
      * @return Whether the configuration file was parsed successfully or not
      * @throws IOException
-     * @throws UnknownPropertyException
-     * @throws InvalidTestNameException
-     * @throws MalformedTestCategory
      */
-    public int parse() throws IOException, UnknownPropertyException, InvalidTestNameException, MalformedTestCategory
+    public int parse() throws IOException
     {   
         FileInputStream fileStream = new FileInputStream(file);
 
@@ -185,7 +121,7 @@ public class Configuration
                     {
                         hasFoundDefaults = true;
 
-                        defaultTestSettings = new TestSettings(false, false, 0, 0, 0, false, 1, null, null, null, null);
+                        defaultTestSettings = new TestSettings(false, false, 0, 0, new ArrayList<Integer>(), false, 1, null, null, null, null);
 
                         @SuppressWarnings("unchecked")
                         ArrayList<LinkedHashMap<String, Object>> defaultMap = (ArrayList<LinkedHashMap<String, Object>>)root.getValue();
@@ -196,7 +132,7 @@ public class Configuration
                     {
                         if (!hasFoundDefaults)
                         {
-                            throw new AssertionError("You must place the defaults first in the yaml file!");
+                            throw new RuntimeException("You must place the defaults first in the yaml file!");
                         }
 
                         @SuppressWarnings("unchecked")
@@ -236,7 +172,7 @@ public class Configuration
 
                         if (name == null || path == null)
                         {
-                            throw new AssertionError("Malformed test!");
+                            throw new RuntimeException("Malformed test!");
                         }
 
                         ConfigurationTest test = new ConfigurationTest(name, path, testSettings);
@@ -293,7 +229,12 @@ public class Configuration
                 }
                 else if (keyValuePair.getKey().equalsIgnoreCase("Decision Cycles"))
                 {
-                    settings.setDecisionCycles((Integer)keyValuePair.getValue());
+                    Object arrayObject = keyValuePair.getValue();
+                    
+                    @SuppressWarnings("unchecked")
+                    List<Integer> decisionCycles = (ArrayList<Integer>)arrayObject;
+                    
+                    settings.setDecisionCycles(decisionCycles);
                 }
                 else if (keyValuePair.getKey().equalsIgnoreCase("Use Seed"))
                 {

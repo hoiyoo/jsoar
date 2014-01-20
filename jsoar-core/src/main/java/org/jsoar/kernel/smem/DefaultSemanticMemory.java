@@ -62,6 +62,7 @@ import org.jsoar.kernel.smem.DefaultSemanticMemoryParams.LearningChoices;
 import org.jsoar.kernel.smem.DefaultSemanticMemoryParams.MergeChoices;
 import org.jsoar.kernel.smem.DefaultSemanticMemoryParams.MirroringChoices;
 import org.jsoar.kernel.smem.DefaultSemanticMemoryParams.Optimization;
+import org.jsoar.kernel.smem.DefaultSemanticMemoryParams.PageChoices;
 import org.jsoar.kernel.symbols.IdentifierImpl;
 import org.jsoar.kernel.symbols.Symbol;
 import org.jsoar.kernel.symbols.SymbolFactoryImpl;
@@ -2831,7 +2832,7 @@ public class DefaultSemanticMemory implements SemanticMemory
     void smem_switch_to_memory_db(String buf) throws SoarException, SQLException, IOException
     {
         trace.print(buf);
-        params.path.set(":memory:");
+        params.path.set(SemanticMemoryDatabase.IN_MEMORY_PATH);
         db.getConnection().close();
         db = null;
         smem_init_db(false);
@@ -2886,9 +2887,10 @@ public class DefaultSemanticMemory implements SemanticMemory
         final String jdbcUrl = params.protocol.get() + ":" + params.path.get();
         final Connection connection = JdbcTools.connect(params.driver.get(), jdbcUrl);
         final DatabaseMetaData meta = connection.getMetaData();
+                
         logger.info("Opened database '" + jdbcUrl + "' with " + meta.getDriverName() + ":" + meta.getDriverVersion());
 
-        if (params.path.get().equals(":memory:"))
+        if (params.path.get().equals(SemanticMemoryDatabase.IN_MEMORY_PATH))
         {
             trace.print(Category.SMEM, "SMem| Initializing semantic memory database in cpu memory.\n");
         }
@@ -2911,7 +2913,7 @@ public class DefaultSemanticMemory implements SemanticMemory
         db.prepare();
 
         // Make sure we do not have an incorrect database version
-        if (!":memory:".equals(params.path.get()))
+        if (!SemanticMemoryDatabase.IN_MEMORY_PATH.equals(params.path.get()))
         {
             final ResultSet result = db.get_schema_version.executeQuery();
             try
@@ -2922,7 +2924,7 @@ public class DefaultSemanticMemory implements SemanticMemory
                     if (!SemanticMemoryDatabase.SMEM_SCHEMA_VERSION.equals(schemaVersion))
                     {
                         logger.error("Incorrect database version, switching to memory.  Found version: " + schemaVersion);
-                        params.path.set(":memory:");
+                        params.path.set(SemanticMemoryDatabase.IN_MEMORY_PATH);
                         // Switch to memory
                         // Undo what was done so far
                         connection.close();
@@ -3079,7 +3081,50 @@ public class DefaultSemanticMemory implements SemanticMemory
             }
         }
 
-        // TODO SMEM Page Size
+        // page_size
+        if (params.driver.equals("org.sqlite.JDBC"))
+        {
+            final PageChoices pageSize = params.page_size.get();
+            
+            long pageSizeLong = 0;
+            
+            switch (pageSize)
+            {
+            case page_16k:
+                pageSizeLong = 16 * 1024;
+                break;
+            case page_1k:
+                pageSizeLong = 1 * 1024;
+                break;
+            case page_2k:
+                pageSizeLong = 2 * 1024;
+                break;
+            case page_32k:
+                pageSizeLong = 32 * 1024;
+                break;
+            case page_4k:
+                pageSizeLong = 4 * 1024;
+                break;
+            case page_64k:
+                pageSizeLong = 64 * 1024;
+                break;
+            case page_8k:
+                pageSizeLong = 8 * 1024;
+                break;
+            default:
+                break;
+            }
+
+            final Statement s = db.getConnection().createStatement();
+            try
+            {
+                s.execute("PRAGMA page_size = " + pageSizeLong);
+            }
+            finally
+            {
+                s.close();
+            }
+        }
     }
 
     /*
@@ -4640,19 +4685,20 @@ public class DefaultSemanticMemory implements SemanticMemory
         return_val.append(return_val2.toString());
     }
 
-    Set<Long /* smem_lti_id */> _smem_print_lti(long /* smem_lti_id */lti_id, char lti_letter, long lti_number, double lti_act, ByRef<String> return_val) throws SQLException
+    Set<Long /* smem_lti_id */> _smem_print_lti(long /* smem_lti_id */lti_id, char lti_letter, long lti_number, double lti_act, StringBuilder return_val) throws SQLException
     {
         Set<Long /* smem_lti_id */> next = new LinkedHashSet<Long>();
 
-        String temp_str, temp_str2 = null;
+        String temp_str;
+        StringBuilder temp_str2 = null;
 
         Map<String, List<String>> augmentations = new LinkedHashMap<String, List<String>>();
 
         PreparedStatement expand_q = db.web_expand;
 
-        return_val.value += "(@";
-        return_val.value += lti_letter;
-        return_val.value += lti_number;
+        return_val.append("(@");
+        return_val.append(lti_letter);
+        return_val.append(lti_number);
 
         expand_q.setLong(1, lti_id);
 
@@ -4682,13 +4728,13 @@ public class DefaultSemanticMemory implements SemanticMemory
                 // identifier vs. constant
                 if (rs.getLong(6 + 1) != SMEM_AUGMENTATIONS_NULL)
                 {
-                    temp_str2 = "@";
+                    temp_str2 = new StringBuilder("@");
 
                     // soar letter
-                    temp_str2 += (char) rs.getInt(4 + 1);
+                    temp_str2.append((char) rs.getInt(4 + 1));
 
                     // number
-                    temp_str2 += rs.getLong(5 + 1);
+                    temp_str2.append(rs.getLong(5 + 1));
 
                     // add to next
                     next.add(rs.getLong(6 + 1));
@@ -4698,13 +4744,13 @@ public class DefaultSemanticMemory implements SemanticMemory
                     switch (rs.getInt(2 + 1))
                     {
                     case Symbols.SYM_CONSTANT_SYMBOL_TYPE:
-                        temp_str2 = smem_reverse_hash_str(rs.getLong(3 + 1));
+                        temp_str2 = new StringBuilder(smem_reverse_hash_str(rs.getLong(3 + 1)));
                         break;
                     case Symbols.INT_CONSTANT_SYMBOL_TYPE:
-                        temp_str2 = (new Integer(smem_reverse_hash_int(rs.getLong(3 + 1)))).toString();
+                        temp_str2 = new StringBuilder((new Integer(smem_reverse_hash_int(rs.getLong(3 + 1)))).toString());
                         break;
                     case Symbols.FLOAT_CONSTANT_SYMBOL_TYPE:
-                        temp_str2 = (new Double(smem_reverse_hash_float(rs.getLong(3 + 1)))).toString();
+                        temp_str2 = new StringBuilder((new Double(smem_reverse_hash_float(rs.getLong(3 + 1)))).toString());
                         break;
 
                     default:
@@ -4717,8 +4763,11 @@ public class DefaultSemanticMemory implements SemanticMemory
                 {
                     augmentations.put(temp_str, new ArrayList<String>());
                 }
-
-                augmentations.get(temp_str).add(temp_str2);
+                if(temp_str2 != null){
+                    augmentations.get(temp_str).add(temp_str2.toString());
+                }else{
+                    augmentations.get(temp_str).add(temp_str);
+                }
             }
         }
         finally
@@ -4730,31 +4779,31 @@ public class DefaultSemanticMemory implements SemanticMemory
         {
             for (Map.Entry<String, List<String>> lti_slot : augmentations.entrySet())
             {
-                return_val.value += " ^";
-                return_val.value += lti_slot.getKey();
+                return_val.append(" ^");
+                return_val.append(lti_slot.getKey());
 
                 for (String slot_val : lti_slot.getValue())
                 {
-                    return_val.value += " ";
-                    return_val.value += slot_val;
+                    return_val.append(" ");
+                    return_val.append(slot_val);
                 }
             }
         }
         augmentations.clear();
 
-        return_val.value += " [";
+        return_val.append(" [");
         if (lti_act >= 0)
         {
-            return_val.value += "+";
+            return_val.append("+");
         }
-        return_val.value += lti_act;
-        return_val.value += "]";
-        return_val.value += ")\n";
+        return_val.append(lti_act);
+        return_val.append("]");
+        return_val.append(")\n");
 
         return next;
     }
 
-    void smem_print_store(ByRef<String> return_val) throws SoarException
+    void smem_print_store(StringBuilder return_val) throws SoarException
     {
         // vizualizing the store requires an open semantic database
         smem_attach();
@@ -4848,7 +4897,7 @@ public class DefaultSemanticMemory implements SemanticMemory
         }
     }
 
-    void smem_print_lti(long /* smem_lti_id */lti_id, int depth, ByRef<String> return_val) throws SoarException
+    void smem_print_lti(long /* smem_lti_id */lti_id, int depth, StringBuilder return_val) throws SoarException
     {
         Set<Long /* smem_lti_id */> visited = new LinkedHashSet<Long>();
 
@@ -4876,7 +4925,7 @@ public class DefaultSemanticMemory implements SemanticMemory
             // output leading spaces ala depth
             for (i = 1; i < c.getDepth(); i++)
             {
-                return_val.value += " ";
+                return_val.append(" ");
             }
 
             // get lti info

@@ -45,6 +45,7 @@ import org.jsoar.kernel.epmem.DefaultEpisodicMemoryParams.GraphMatchChoices;
 import org.jsoar.kernel.epmem.DefaultEpisodicMemoryParams.LazyCommitChoices;
 import org.jsoar.kernel.epmem.DefaultEpisodicMemoryParams.MergeChoices;
 import org.jsoar.kernel.epmem.DefaultEpisodicMemoryParams.Optimization;
+import org.jsoar.kernel.epmem.DefaultEpisodicMemoryParams.PageChoices;
 import org.jsoar.kernel.epmem.DefaultEpisodicMemoryParams.Phase;
 import org.jsoar.kernel.epmem.EpisodicMemoryIdReservation.EpisodicMemoryIdPair;
 import org.jsoar.kernel.learning.Chunker;
@@ -513,19 +514,7 @@ public class DefaultEpisodicMemory implements EpisodicMemory
         if (params.driver.equals("org.sqlite.JDBC"))
         {
             // TODO: Generalize this. Move to a resource somehow.
-            final int cacheSize;
-            switch (params.cache.get())
-            {
-            case small:
-                cacheSize = 5000;
-                break; // 5MB cache
-            case medium:
-                cacheSize = 20000;
-                break; // 20MB cache
-            case large:
-            default:
-                cacheSize = 100000; // 100MB cache
-            }
+            final long cacheSize = params.cache_size.get();
 
             final Statement s = db.getConnection().createStatement();
             try
@@ -565,7 +554,50 @@ public class DefaultEpisodicMemory implements EpisodicMemory
             }
         }
 
-        // TODO EPMEM page_size
+        // page_size
+        if (params.driver.equals("org.sqlite.JDBC"))
+        {
+            final PageChoices pageSize = params.page_size.get();
+            
+            long pageSizeLong = 0;
+            
+            switch (pageSize)
+            {
+            case page_16k:
+                pageSizeLong = 16 * 1024;
+                break;
+            case page_1k:
+                pageSizeLong = 1 * 1024;
+                break;
+            case page_2k:
+                pageSizeLong = 2 * 1024;
+                break;
+            case page_32k:
+                pageSizeLong = 32 * 1024;
+                break;
+            case page_4k:
+                pageSizeLong = 4 * 1024;
+                break;
+            case page_64k:
+                pageSizeLong = 64 * 1024;
+                break;
+            case page_8k:
+                pageSizeLong = 8 * 1024;
+                break;
+            default:
+                break;
+            }
+
+            final Statement s = db.getConnection().createStatement();
+            try
+            {
+                s.execute("PRAGMA page_size = " + pageSizeLong);
+            }
+            finally
+            {
+                s.close();
+            }
+        }
     }
 
     private void initMinMax(long time_max, PreparedStatement minmax_select, List<Boolean> minmax_max,
@@ -625,6 +657,7 @@ public class DefaultEpisodicMemory implements EpisodicMemory
         final String jdbcUrl = params.protocol.get() + ":" + params.path.get();
         final Connection connection = JdbcTools.connect(params.driver.get(), jdbcUrl);
         final DatabaseMetaData meta = connection.getMetaData();
+        
         logger.info("Opened database '" + jdbcUrl + "' with " + meta.getDriverName() + ":" + meta.getDriverVersion());
         db = new EpisodicMemoryDatabase(params.driver.get(), connection);
 
@@ -638,7 +671,7 @@ public class DefaultEpisodicMemory implements EpisodicMemory
         db.structure();
         db.prepare();
         //Make sure we do not have an incorrect database version
-        if (!":memory:".equals(params.path.get()))
+        if (!EpisodicMemoryDatabase.IN_MEMORY_PATH.equals(params.path.get()))
         {
             final ResultSet result = db.get_schema_version.executeQuery();
             try
@@ -649,7 +682,7 @@ public class DefaultEpisodicMemory implements EpisodicMemory
                     if (!EpisodicMemoryDatabase.EPMEM_SCHEMA_VERSION.equals(schemaVersion))
                     {
                         logger.error("Incorrect database version, switching to memory.  Found version: " + schemaVersion);
-                        params.path.set(":memory:");
+                        params.path.set(EpisodicMemoryDatabase.IN_MEMORY_PATH);
                         // Switch to memory
                         // Undo what was done so far
                         connection.close();
@@ -4202,7 +4235,7 @@ public class DefaultEpisodicMemory implements EpisodicMemory
                                     
                                     if (is_lti && point_type == EPMEM_RANGE_START && interval_type != EPMEM_RANGE_POINT && interval.time < promo_time)
                                     {
-                                        interval.time = promo_time;
+                                        interval.time = promo_time - 1;
                                     }
                                     
                                     interval.sql = interval_sql;
@@ -6655,20 +6688,9 @@ public class DefaultEpisodicMemory implements EpisodicMemory
                 if(my_refs.contains(w))
                 {
                     my_refs.remove(w);
-
-                    // recurse if no incoming edges from top-state (i.e. not in transitive closure of top-state)
-                    boolean recurse = true;
-                    for(WmeImpl rc_it : my_refs)
-                    {
-                        //if ( ( !(*rc_it) ) || ( (*rc_it)->id->id.level == my_agent->top_state->id.level ) )
-                        if(rc_it == null || rc_it.id.level==decider.top_state.level)
-                        {
-                            recurse = false;
-                            break;
-                        }
-                    }
-
-                    if ( recurse )
+                    
+                    // recurse if no incoming edges from epmem
+                    if(my_refs.isEmpty())
                     {
                         my_refs.clear();
                         epmem_id_removes.push(w.value);
@@ -6992,7 +7014,7 @@ public class DefaultEpisodicMemory implements EpisodicMemory
         {
             epmem_close();
             epmem_init_db_ex(true);
-            if(!":memory:".equalsIgnoreCase(params.path.get()) && params.append_database.get() == AppendDatabaseChoices.on){
+            if(!EpisodicMemoryDatabase.IN_MEMORY_PATH.equalsIgnoreCase(params.path.get()) && params.append_database.get() == AppendDatabaseChoices.on){
                 logger.info("EpMem|   Note: There was no effective change to memory contents because append mode is on and path set to file.");
             }
         }
